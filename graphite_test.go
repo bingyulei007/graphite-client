@@ -63,3 +63,24 @@ func TestMetricPlainB(t *testing.T) {
 		}
 	}
 }
+
+func TestNopClient(t *testing.T) {
+	// nop client does nothing, this test is just for code coverage
+	c, err := NewNopClient()
+	if err != nil {
+		t.Errorf("Failed to create Nop Client")
+	}
+
+	// send 100000 metrics in total, ensure nop client won't block
+	size := 100000
+	for i := 0; i < size; i++ {
+		c.SendMetric(&Metric{Name: "test.nop", Value: i, Timestamp: 0})
+		c.SendSimple("test.nop", 0, 0)
+	}
+
+	metrics := make([]*Metric, size)
+	for i := 0; i < size; i++ {
+		metrics[i] = &Metric{Name: "test.nop", Value: i, Timestamp: 0}
+	}
+	c.SendMetrics(metrics)
+}
