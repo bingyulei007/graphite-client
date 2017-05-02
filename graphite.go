@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -125,12 +126,18 @@ func (c *Client) Shutdown(timeout time.Duration) {
 	}
 }
 
+// cleanPrefix cleans up caller passed prefix, removes leading and trailing white spaces and dots
+func cleanPrefix(prefix string) string {
+	// TODO check for invalid characters
+	return strings.Trim(prefix, ". ")
+}
+
 // NewTCPClient creates a graphite client that sends metric using plain text protocol over tcp
 // if prefix is specified, all metrics' name will be prefixed before sending to graphite
 func NewTCPClient(host string, port int, prefix string, reconnectDelay time.Duration) (*Client, error) {
 	// TODO check if host and port is valid
 	client := &Client{
-		prefix:   prefix,
+		prefix:   cleanPrefix(prefix),
 		network:  "tcp",
 		address:  fmt.Sprintf("%s:%d", host, port),
 		protocol: plain,
@@ -149,7 +156,7 @@ func NewTCPClient(host string, port int, prefix string, reconnectDelay time.Dura
 func NewUDPClient(host string, port int, prefix string, reconnectDelay time.Duration) (*Client, error) {
 	// TODO check if host and port is valid
 	client := &Client{
-		prefix:   prefix,
+		prefix:   cleanPrefix(prefix),
 		network:  "udp",
 		address:  fmt.Sprintf("%s:%d", host, port),
 		protocol: plain,
