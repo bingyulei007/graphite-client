@@ -149,6 +149,7 @@ func NewTCPClient(host string, port int, prefix string, reconnectDelay time.Dura
 		shutdown:      false,
 		workerStopped: make(chan struct{}, 1),
 	}
+	go client.worker()
 	return client, nil
 }
 
@@ -168,6 +169,7 @@ func NewUDPClient(host string, port int, prefix string, reconnectDelay time.Dura
 		shutdown:      false,
 		workerStopped: make(chan struct{}, 1),
 	}
+	go client.worker()
 	return client, nil
 }
 
@@ -186,8 +188,9 @@ func NewNopClient() (*Client, error) {
 
 // reconnect establish connection to server, blocks the caller until success or client shutdown
 func (c *Client) reconnect() {
-	if c.conn == nil {
+	if c.conn != nil {
 		c.conn.Close()
+		c.conn = nil
 	}
 	for {
 		// if client was shutdown, and connection is not established, we just give up
