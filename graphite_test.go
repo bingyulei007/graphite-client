@@ -200,7 +200,7 @@ func TestTcpClient(t *testing.T) {
 			t.Errorf("server.GetMessage() failed with: %s", err)
 		} else if plainRet != data.plain {
 			t.Errorf(
-				"Metric:Plain() was incorrect, got: %s, want: %s",
+				"server got incorrect message, got: %s, want: %s",
 				strings.Replace(plainRet, "\n", "\\n", -1),
 				strings.Replace(data.plain, "\n", "\\n", -1),
 			)
@@ -236,11 +236,47 @@ func TestTcpClientWithPrefix(t *testing.T) {
 			t.Errorf("server.GetMessage() failed with: %s", err)
 		} else if plainRet != data.plain {
 			t.Errorf(
-				"Metric:Plain() was incorrect, got: %s, want: %s",
+				"server got incorrect message, got: %s, want: %s",
 				strings.Replace(plainRet, "\n", "\\n", -1),
 				strings.Replace(data.plain, "\n", "\\n", -1),
 			)
 		}
 		client.Shutdown(1 * time.Second)
 	}
+}
+
+func TestTcpClientBulkSend(t *testing.T) {
+	var metrics []*Metric
+	var plains []string
+	var err error
+
+	for _, data := range metricTestData {
+		if data.prefix != "" {
+			continue
+		}
+		metrics = append(metrics, &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp})
+		plains = append(plains, data.plain)
+	}
+
+	client, err := NewTCPClient("127.0.0.1", 62003, "", 1*time.Second)
+	if err != nil {
+		t.Errorf("Failed to create TCP Client")
+		return
+	}
+
+	client.SendMetrics(metrics)
+	for _, plain := range plains {
+		plainRet, err := tcpServer.GetMessage(1 * time.Second)
+		if err != nil {
+			t.Errorf("server.GetMessage() failed with: %s", err)
+		} else if plainRet != plain {
+			t.Errorf(
+				"server got incorrect message, got: %s, want: %s",
+				strings.Replace(plainRet, "\n", "\\n", -1),
+				strings.Replace(plain, "\n", "\\n", -1),
+			)
+		}
+	}
+
+	client.Shutdown(1 * time.Second)
 }
