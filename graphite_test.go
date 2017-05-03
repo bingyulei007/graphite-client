@@ -40,7 +40,7 @@ var metricTestData = []struct {
 }
 
 var tcpServer = NewGraphiteServer("tcp", "127.0.0.1:62003")
-var udpServer = NewGraphiteServer("udp", "127.0.0.1:62004")
+var udpServer = NewGraphiteServer("udp", "127.0.0.1:62003")
 
 type GraphiteServer struct {
 	network       string
@@ -82,7 +82,7 @@ func (s *GraphiteServer) receiveWorker() {
 	if s.network == "tcp" {
 		tcpAddr, err := net.ResolveTCPAddr(s.network, s.address)
 		if err != nil {
-			fmt.Println("net.ResolveTCPAddr(() failed with:", err)
+			fmt.Println("net.ResolveTCPAddr() failed with:", err)
 			return
 		}
 
@@ -124,18 +124,41 @@ func (s *GraphiteServer) receiveWorker() {
 			}(tcpConn)
 		}
 	} else {
-		// udp
+		udpAddr, err := net.ResolveUDPAddr(s.network, s.address)
+		if err != nil {
+			fmt.Println("net.ResolveUDPAddr() failed with:", err)
+			return
+		}
+
+		conn, err := net.ListenUDP(s.network, udpAddr)
+		if err != nil {
+			fmt.Println("net.ListenUDP() failed with:", err)
+			return
+		}
+		s.conn = conn
+
+		defer conn.Close()
+
+		for {
+			buf := make([]byte, 1500)
+			if l, _, err := conn.ReadFromUDP(buf); err == nil {
+				s.messageBuffer <- string(buf[:l])
+			} else {
+				fmt.Println("conn.ReadFromUDP() failed with:", err)
+				break
+			}
+		}
 	}
 }
 
 func TestMetricPlain(t *testing.T) {
 	for _, data := range metricTestData {
 		metric := &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
-		plainRet := metric.Plain(cleanPrefix(data.prefix))
-		if plainRet != data.plain {
+		ret := metric.Plain(cleanPrefix(data.prefix))
+		if ret != data.plain {
 			t.Errorf(
 				"Metric:Plain() was incorrect, got: %s, want: %s",
-				strings.Replace(plainRet, "\n", "\\n", -1),
+				strings.Replace(ret, "\n", "\\n", -1),
 				strings.Replace(data.plain, "\n", "\\n", -1),
 			)
 		}
@@ -145,12 +168,12 @@ func TestMetricPlain(t *testing.T) {
 func TestMetricPlainB(t *testing.T) {
 	for _, data := range metricTestData {
 		metric := &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
-		plainRet := metric.PlainB(cleanPrefix(data.prefix))
+		ret := metric.PlainB(cleanPrefix(data.prefix))
 		plain := []byte(data.plain)
-		if bytes.Compare(plainRet, plain) != 0 {
+		if bytes.Compare(ret, plain) != 0 {
 			t.Errorf(
 				"Metric:PlainB() was incorrect, got: %s, want: %s",
-				bytes.Replace(plainRet, []byte("\n"), []byte("\\n"), -1),
+				bytes.Replace(ret, []byte("\n"), []byte("\\n"), -1),
 				bytes.Replace(plain, []byte("\n"), []byte("\\n"), -1),
 			)
 		}
@@ -179,44 +202,68 @@ func TestNopClient(t *testing.T) {
 	c.SendMetrics(metrics)
 }
 
-func TestTcpClient(t *testing.T) {
+func checkServerMessage(server *GraphiteServer, expected string, t *testing.T) {
+	message, err := server.GetMessage(1 * time.Second)
+	if err != nil {
+		t.Errorf("server.GetMessage() failed with: %s", err)
+	} else if message != message {
+		t.Errorf(
+			"server got incorrect message, got: %s, want: %s",
+			strings.Replace(message, "\n", "\\n", -1),
+			strings.Replace(expected, "\n", "\\n", -1),
+		)
+	}
+}
+
+func testClient(client *Client, server *GraphiteServer, t *testing.T) {
 	var metric *Metric
 	var err error
 
+	for _, data := range metricTestData {
+		if data.prefix != "" {
+			continue
+		}
+
+		// test SendMetric()
+		metric = &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
+		client.SendMetric(metric)
+		checkServerMessage(server, data.plain, t)
+
+		// test SendSimple()
+		client.SendSimple(data.name, data.value, data.timestamp)
+		checkServerMessage(server, data.plain, t)
+	}
+
+	// after Shutdown(), should not receive anything
+	client.Shutdown(1 * time.Second)
+	client.SendMetric(&Metric{Name: "test.shutdown", Value: 0, Timestamp: 0})
+	_, err = server.GetMessage(1 * time.Second)
+	if err == nil {
+		t.Errorf("Clien still sends data to server after shutdown")
+	}
+}
+
+func TestTCPClient(t *testing.T) {
 	client, err := NewTCPClient("127.0.0.1", 62003, "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create TCP Client")
 		return
 	}
 
-	for _, data := range metricTestData {
-		if data.prefix != "" {
-			continue
-		}
-		metric = &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
-		client.SendMetric(metric)
-		plainRet, err := tcpServer.GetMessage(1 * time.Second)
-		if err != nil {
-			t.Errorf("server.GetMessage() failed with: %s", err)
-		} else if plainRet != data.plain {
-			t.Errorf(
-				"server got incorrect message, got: %s, want: %s",
-				strings.Replace(plainRet, "\n", "\\n", -1),
-				strings.Replace(data.plain, "\n", "\\n", -1),
-			)
-		}
-	}
-
-	// after Shutdown(), should not receive anything
-	client.Shutdown(1 * time.Second)
-	client.SendMetric(&Metric{Name: "test.shutdown", Value: 0, Timestamp: 0})
-	_, err = tcpServer.GetMessage(1 * time.Second)
-	if err == nil {
-		t.Errorf("Clien still sends data to server after shutdown")
-	}
+	testClient(client, tcpServer, t)
 }
 
-func TestTcpClientWithPrefix(t *testing.T) {
+func TestUDPClient(t *testing.T) {
+	client, err := NewUDPClient("127.0.0.1", 62003, "", 1*time.Second)
+	if err != nil {
+		t.Errorf("Failed to create UDP Client")
+		return
+	}
+
+	testClient(client, udpServer, t)
+}
+
+func testClientWithPrefix(newClientFunc func(string) (*Client, error), server *GraphiteServer, t *testing.T) {
 	var metric *Metric
 
 	for _, data := range metricTestData {
@@ -224,31 +271,47 @@ func TestTcpClientWithPrefix(t *testing.T) {
 			continue
 		}
 
-		client, err := NewTCPClient("127.0.0.1", 62003, data.prefix, 1*time.Second)
+		//client, err := NewTCPClient("127.0.0.1", 62003, data.prefix, 1*time.Second)
+		client, err := newClientFunc(data.prefix)
 		if err != nil {
-			t.Errorf("Failed to create TCP Client")
+			t.Errorf("Failed to create Client")
 			continue
 		}
+
 		metric = &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
 		client.SendMetric(metric)
-		plainRet, err := tcpServer.GetMessage(1 * time.Second)
-		if err != nil {
-			t.Errorf("server.GetMessage() failed with: %s", err)
-		} else if plainRet != data.plain {
-			t.Errorf(
-				"server got incorrect message, got: %s, want: %s",
-				strings.Replace(plainRet, "\n", "\\n", -1),
-				strings.Replace(data.plain, "\n", "\\n", -1),
-			)
-		}
+		checkServerMessage(server, data.plain, t)
+
+		client.SendSimple(data.name, data.value, data.timestamp)
+		checkServerMessage(server, data.plain, t)
+
 		client.Shutdown(1 * time.Second)
 	}
 }
 
-func TestTcpClientBulkSend(t *testing.T) {
+func TestTCPClientWithPrefix(t *testing.T) {
+	testClientWithPrefix(
+		func(prefix string) (*Client, error) {
+			return NewTCPClient("127.0.0.1", 62003, prefix, 1*time.Second)
+		},
+		tcpServer,
+		t,
+	)
+}
+
+func TestUDPClientWithPrefix(t *testing.T) {
+	testClientWithPrefix(
+		func(prefix string) (*Client, error) {
+			return NewUDPClient("127.0.0.1", 62003, prefix, 1*time.Second)
+		},
+		udpServer,
+		t,
+	)
+}
+
+func testClientBulkSend(client *Client, server *GraphiteServer, t *testing.T) {
 	var metrics []*Metric
 	var plains []string
-	var err error
 
 	for _, data := range metricTestData {
 		if data.prefix != "" {
@@ -258,25 +321,28 @@ func TestTcpClientBulkSend(t *testing.T) {
 		plains = append(plains, data.plain)
 	}
 
+	client.SendMetrics(metrics)
+	for _, plain := range plains {
+		checkServerMessage(server, plain, t)
+	}
+
+	client.Shutdown(1 * time.Second)
+}
+
+func TestTCPClientBulkSend(t *testing.T) {
 	client, err := NewTCPClient("127.0.0.1", 62003, "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create TCP Client")
 		return
 	}
+	testClientBulkSend(client, tcpServer, t)
+}
 
-	client.SendMetrics(metrics)
-	for _, plain := range plains {
-		plainRet, err := tcpServer.GetMessage(1 * time.Second)
-		if err != nil {
-			t.Errorf("server.GetMessage() failed with: %s", err)
-		} else if plainRet != plain {
-			t.Errorf(
-				"server got incorrect message, got: %s, want: %s",
-				strings.Replace(plainRet, "\n", "\\n", -1),
-				strings.Replace(plain, "\n", "\\n", -1),
-			)
-		}
+func TestUDPClientBuldSend(t *testing.T) {
+	client, err := NewUDPClient("127.0.0.1", 62003, "", 1*time.Second)
+	if err != nil {
+		t.Errorf("Failed to create UDP Client")
+		return
 	}
-
-	client.Shutdown(1 * time.Second)
+	testClientBulkSend(client, udpServer, t)
 }
