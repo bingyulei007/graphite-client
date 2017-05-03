@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,8 +47,15 @@ type GraphiteServer struct {
 	network       string
 	address       string
 	messageBuffer chan string
-	listener      *net.TCPListener
-	conn          *net.UDPConn
+	shutdown      bool
+
+	listener *net.TCPListener
+	tcpConns []*net.TCPConn
+	udpConn  *net.UDPConn
+
+	sync.Mutex
+	workerStarted chan struct{}
+	workerStopped chan struct{}
 }
 
 func NewGraphiteServer(network string, address string) *GraphiteServer {
@@ -55,12 +63,21 @@ func NewGraphiteServer(network string, address string) *GraphiteServer {
 		network:       network,
 		address:       address,
 		messageBuffer: make(chan string, 100),
+		shutdown:      false,
+
+		workerStarted: make(chan struct{}, 1),
+		workerStopped: make(chan struct{}, 1),
 	}
 	go server.receiveWorker()
 	return server
 }
 
 func (s *GraphiteServer) GetMessage(timeout time.Duration) (string, error) {
+	// if server has already shutdown, and no message in buffer, just return empty imediately
+	if s.shutdown == true && len(s.messageBuffer) == 0 {
+		return "", nil
+	}
+
 	select {
 	case message := <-s.messageBuffer:
 		return message, nil
@@ -70,15 +87,38 @@ func (s *GraphiteServer) GetMessage(timeout time.Duration) (string, error) {
 }
 
 func (s *GraphiteServer) Shutdown() {
-	if s.network == "tcp" && s.listener != nil {
-		s.listener.Close()
+	// Wait for worker to be run (and listener started)
+	// otherwise, listener may be started after Shutdown()
+	<-s.workerStarted
+
+	s.Lock()
+	if s.network == "tcp" {
+		if s.listener != nil {
+			s.listener.Close()
+			s.listener = nil
+		}
+		for _, tcpConn := range s.tcpConns {
+			tcpConn.Close()
+		}
 	}
-	if s.network == "udp" && s.conn != nil {
-		s.conn.Close()
+	if s.network == "udp" && s.udpConn != nil {
+		s.udpConn.Close()
+		s.udpConn = nil
 	}
+	s.Unlock()
+
+	// wait for worker stop
+	<-s.workerStopped
+	s.shutdown = true
 }
 
 func (s *GraphiteServer) receiveWorker() {
+	defer func() {
+		// close workerStarted in case some error happend before listener started
+		close(s.workerStarted)
+		close(s.workerStopped)
+	}()
+
 	if s.network == "tcp" {
 		tcpAddr, err := net.ResolveTCPAddr(s.network, s.address)
 		if err != nil {
@@ -91,26 +131,38 @@ func (s *GraphiteServer) receiveWorker() {
 			fmt.Println("net.ListenTCP() failed with:", err)
 			return
 		}
+		s.Lock()
 		s.listener = listener
-
-		defer listener.Close()
+		s.Unlock()
+		s.workerStarted <- struct{}{}
 
 		for {
-			tcpConn, err := listener.AcceptTCP()
+			if s.listener == nil {
+				// server was shutdown
+				return
+			}
+			tcpConn, err := s.listener.AcceptTCP()
 			if err != nil {
-				fmt.Println("listener.AcceptTCP() failed with:", err)
+				if !strings.Contains(err.Error(), "use of closed network connection") {
+					fmt.Println("listener.AcceptTCP() failed with:", err)
+				}
 				break
 			}
+
+			s.Lock()
+			s.tcpConns = append(s.tcpConns, tcpConn)
+			s.Unlock()
+
 			go func(conn *net.TCPConn) {
 				defer conn.Close()
 				for {
 					buf := make([]byte, 1500)
 					n, err := conn.Read(buf)
 					if err != nil {
-						if err == io.EOF {
-							break
+						if err != io.EOF {
+							fmt.Println("conn.Read() failed with:", err)
 						}
-						fmt.Println("conn.Read() failed with:", err)
+						break
 					}
 					messages := bytes.Split(buf[:n], []byte("\n"))
 					for _, message := range messages {
@@ -135,16 +187,24 @@ func (s *GraphiteServer) receiveWorker() {
 			fmt.Println("net.ListenUDP() failed with:", err)
 			return
 		}
-		s.conn = conn
 
-		defer conn.Close()
+		s.Lock()
+		s.udpConn = conn
+		s.Unlock()
+		s.workerStarted <- struct{}{}
 
 		for {
+			if s.udpConn == nil {
+				// server was shutdown
+				return
+			}
 			buf := make([]byte, 1500)
 			if l, _, err := conn.ReadFromUDP(buf); err == nil {
 				s.messageBuffer <- string(buf[:l])
 			} else {
-				fmt.Println("conn.ReadFromUDP() failed with:", err)
+				if !strings.Contains(err.Error(), "use of closed network connection") {
+					fmt.Println("conn.ReadFromUDP() failed with:", err)
+				}
 				break
 			}
 		}
@@ -345,4 +405,87 @@ func TestUDPClientBuldSend(t *testing.T) {
 		return
 	}
 	testClientBulkSend(client, udpServer, t)
+}
+
+func testClientReconnect(newClient func() *Client, newServer func() *GraphiteServer, t *testing.T) {
+	// procedure
+	// * new server and client
+	// * send some data
+	// * shutdown the server, new another server
+	// * send some data
+	// * check if data after new server created is received
+
+	// new server
+	server := newServer()
+	client := newClient()
+
+	// send some data
+	for i := 0; i < 10; i++ {
+		client.SendSimple("test.reconnect", i, 1493712949)
+	}
+
+	// shutdown the server, and new server
+	server.Shutdown()
+	server = newServer()
+
+	// send some other data
+	var dataAfterReconnect = make(map[string]struct{})
+	var foundDataAfterReconnect = 0
+	for i := 10; i < 20; i++ {
+		client.SendSimple("test.reconnect", i, 1493712949)
+		plain := fmt.Sprintf("test.reconnect %v 1493712949\n", i)
+		dataAfterReconnect[plain] = struct{}{}
+
+		// wait for some time, make sure the lower level network stack has sent the data out,
+		// so can network error (e.g. server closed) be noticed.
+		// if we don't sleep here, network stack may merge subsequent data into one packet,
+		// and subsequent net.Conn.Write() would success without notice that server has already closed connection.
+		time.Sleep(time.Microsecond * 10)
+	}
+
+	for {
+		ret, err := server.GetMessage(1 * time.Second)
+		if err != nil {
+			// timeout
+			break
+		}
+		if _, ok := dataAfterReconnect[ret]; ok {
+			foundDataAfterReconnect++
+		}
+	}
+	if foundDataAfterReconnect <= 5 {
+		t.Errorf("Client:reconnect() may not working properly, expected to get at least 5 messages, got %d instead.", foundDataAfterReconnect)
+	}
+}
+
+func TestTCPClientReconnect(t *testing.T) {
+	testClientReconnect(
+		func() *Client {
+			client, err := NewTCPClient("127.0.0.1", 62004, "", 1*time.Microsecond)
+			if err != nil {
+				fmt.Println("failed to create tcp client:", err)
+			}
+			return client
+		},
+		func() *GraphiteServer {
+			return NewGraphiteServer("tcp", "127.0.0.1:62004")
+		},
+		t,
+	)
+}
+
+func TestUDPClientReconnect(t *testing.T) {
+	testClientReconnect(
+		func() *Client {
+			client, err := NewUDPClient("127.0.0.1", 62004, "", 1*time.Microsecond)
+			if err != nil {
+				fmt.Println("failed to create udp client:", err)
+			}
+			return client
+		},
+		func() *GraphiteServer {
+			return NewGraphiteServer("udp", "127.0.0.1:62004")
+		},
+		t,
+	)
 }
