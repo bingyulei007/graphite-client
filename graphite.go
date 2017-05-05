@@ -60,6 +60,7 @@ type Client struct {
 
 	shutdown      bool
 	workerStopped chan struct{}
+	stopSendChans []chan struct{}
 }
 
 // SendMetric sends a metric to the server.
@@ -101,6 +102,18 @@ func (c *Client) SendSimple(name string, value interface{}, timestamp int64) {
 		Value:     value,
 		Timestamp: timestamp,
 	})
+}
+
+// SendChan receives metrics from chan and send continually.
+// SendChan will block the caller until the chan is closed.
+func (c *Client) SendChan(ch chan *Metric) {
+	for {
+		if metric, ok := <-ch; ok {
+			c.SendMetric(metric)
+		} else {
+			break
+		}
+	}
 }
 
 // Shutdown closes the client.

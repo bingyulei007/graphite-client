@@ -279,10 +279,19 @@ func testClient(client *Client, server *GraphiteServer, t *testing.T) {
 	var metric *Metric
 	var err error
 
+	// for testing SendChan
+	metricChan := make(chan *Metric)
+	go client.SendChan(metricChan)
+
 	for _, data := range metricTestData {
 		if data.prefix != "" {
 			continue
 		}
+
+		// test SendChan()
+		metric = &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
+		metricChan <- metric
+		checkServerMessage(server, data.plain, t)
 
 		// test SendMetric()
 		metric = &Metric{Name: data.name, Value: data.value, Timestamp: data.timestamp}
@@ -293,6 +302,8 @@ func testClient(client *Client, server *GraphiteServer, t *testing.T) {
 		client.SendSimple(data.name, data.value, data.timestamp)
 		checkServerMessage(server, data.plain, t)
 	}
+
+	close(metricChan)
 
 	// after Shutdown(), should not receive anything
 	client.Shutdown(1 * time.Second)
