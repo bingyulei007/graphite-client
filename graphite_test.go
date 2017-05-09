@@ -262,6 +262,43 @@ func TestNopClient(t *testing.T) {
 	c.SendMetrics(metrics)
 }
 
+func TestNewClient(t *testing.T) {
+	var clients = []struct {
+		url    string
+		errsig string
+	}{
+		{"127.0.0.1", ""},
+		{"127.0.0.1:2003", ""},
+		{"tcp://127.0.0.1", ""},
+		{"tcp://127.0.0.1:2003", ""},
+		{"udp://127.0.0.1", ""},
+		{"udp://127.0.0.1:2003", ""},
+		{"pickle://127.0.0.1", ""},
+		{"pickle://127.0.0.1:2004", ""},
+		{"", "Invalid graphite url"},
+		{"tcp://", "Invalid graphite url"},
+		{"foo://127.0.0.1", "Invalid graphite url"},
+		{":2003", "Invalid graphite url"},
+	}
+
+	for _, data := range clients {
+		client, err := NewClient(data.url, "", time.Second)
+		switch {
+		case err == nil && data.errsig != "":
+			t.Errorf("NewClient didn't fail as expected, url: %s, expected signature: %s", data.url, data.errsig)
+		case err != nil && data.errsig == "":
+			t.Errorf("NewClient failed for url: %s with error: %v", data.url, err)
+		case err != nil && !strings.Contains(err.Error(), data.errsig):
+			t.Errorf("NewClient failed with unexpected error, url: %s, error: %v, expected error: %s", data.url, err, data.errsig)
+		default:
+			// great!
+		}
+		if client != nil {
+			client.Shutdown(time.Second)
+		}
+	}
+}
+
 func checkServerMessage(server *GraphiteServer, expected string, t *testing.T) {
 	message, err := server.GetMessage(1 * time.Second)
 	if err != nil {
@@ -315,7 +352,7 @@ func testClient(client *Client, server *GraphiteServer, t *testing.T) {
 }
 
 func TestTCPClient(t *testing.T) {
-	client, err := NewTCPClient("127.0.0.1", 62003, "", 1*time.Second)
+	client, err := NewClient("tcp://127.0.0.1:62003", "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create TCP Client")
 		return
@@ -325,7 +362,7 @@ func TestTCPClient(t *testing.T) {
 }
 
 func TestUDPClient(t *testing.T) {
-	client, err := NewUDPClient("127.0.0.1", 62003, "", 1*time.Second)
+	client, err := NewClient("udp://127.0.0.1:62003", "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create UDP Client")
 		return
@@ -342,7 +379,6 @@ func testClientWithPrefix(newClientFunc func(string) (*Client, error), server *G
 			continue
 		}
 
-		//client, err := NewTCPClient("127.0.0.1", 62003, data.prefix, 1*time.Second)
 		client, err := newClientFunc(data.prefix)
 		if err != nil {
 			t.Errorf("Failed to create Client")
@@ -363,7 +399,7 @@ func testClientWithPrefix(newClientFunc func(string) (*Client, error), server *G
 func TestTCPClientWithPrefix(t *testing.T) {
 	testClientWithPrefix(
 		func(prefix string) (*Client, error) {
-			return NewTCPClient("127.0.0.1", 62003, prefix, 1*time.Second)
+			return NewClient("tcp://127.0.0.1:62003", prefix, 1*time.Second)
 		},
 		tcpServer,
 		t,
@@ -373,7 +409,7 @@ func TestTCPClientWithPrefix(t *testing.T) {
 func TestUDPClientWithPrefix(t *testing.T) {
 	testClientWithPrefix(
 		func(prefix string) (*Client, error) {
-			return NewUDPClient("127.0.0.1", 62003, prefix, 1*time.Second)
+			return NewClient("udp://127.0.0.1:62003", prefix, 1*time.Second)
 		},
 		udpServer,
 		t,
@@ -401,7 +437,7 @@ func testClientBulkSend(client *Client, server *GraphiteServer, t *testing.T) {
 }
 
 func TestTCPClientBulkSend(t *testing.T) {
-	client, err := NewTCPClient("127.0.0.1", 62003, "", 1*time.Second)
+	client, err := NewClient("tcp://127.0.0.1:62003", "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create TCP Client")
 		return
@@ -410,7 +446,7 @@ func TestTCPClientBulkSend(t *testing.T) {
 }
 
 func TestUDPClientBuldSend(t *testing.T) {
-	client, err := NewUDPClient("127.0.0.1", 62003, "", 1*time.Second)
+	client, err := NewClient("udp://127.0.0.1:62003", "", 1*time.Second)
 	if err != nil {
 		t.Errorf("Failed to create UDP Client")
 		return
@@ -472,7 +508,7 @@ func testClientReconnect(newClient func() *Client, newServer func() *GraphiteSer
 func TestTCPClientReconnect(t *testing.T) {
 	testClientReconnect(
 		func() *Client {
-			client, err := NewTCPClient("127.0.0.1", 62004, "", 1*time.Microsecond)
+			client, err := NewClient("tcp://127.0.0.1:62004", "", 1*time.Microsecond)
 			if err != nil {
 				fmt.Println("failed to create tcp client:", err)
 			}
@@ -488,7 +524,7 @@ func TestTCPClientReconnect(t *testing.T) {
 func TestUDPClientReconnect(t *testing.T) {
 	testClientReconnect(
 		func() *Client {
-			client, err := NewUDPClient("127.0.0.1", 62004, "", 1*time.Microsecond)
+			client, err := NewClient("udp://127.0.0.1:62004", "", 1*time.Microsecond)
 			if err != nil {
 				fmt.Println("failed to create udp client:", err)
 			}

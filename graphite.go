@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -142,15 +143,61 @@ func cleanPrefix(prefix string) string {
 	return strings.Trim(prefix, " ")
 }
 
-// NewTCPClient creates a graphite client that sends metric using plain text protocol over tcp
-// if prefix is specified, all metrics' name will be prefixed before sending to graphite
-func NewTCPClient(host string, port int, prefix string, reconnectDelay time.Duration) (*Client, error) {
-	// TODO check if host and port is valid
+func findStringSubmatchMap(r *regexp.Regexp, s string) map[string]string {
+	captures := make(map[string]string)
+
+	match := r.FindStringSubmatch(s)
+	if match == nil {
+		return captures
+	}
+
+	for i, name := range r.SubexpNames() {
+		if i == 0 || name == "" {
+			continue
+		}
+
+		captures[name] = match[i]
+	}
+	return captures
+}
+
+// NewClient creates a graphite client. If prefix is specified, all metrics' name will be
+// prefixed before sending to graphite.
+func NewClient(url string, prefix string, reconnectDelay time.Duration) (*Client, error) {
+	// parse url, formats: ${protocol}://${host}:${port}
+	// ${protocol} is optional, valid values: tcp, udp, pickle (via tcp), default to tcp
+	// ${host} is mandatary
+	// ${port} is optional, default to 2003
+	captures := findStringSubmatchMap(
+		regexp.MustCompile(`^((?P<n>(tcp|udp|pickle))://)?(?P<h>[^:]+)(:(?P<p>\d+))?$`),
+		url,
+	)
+	var net, host, port = captures["n"], captures["h"], captures["p"]
+
+	if host == "" {
+		return nil, errors.New("Invalid graphite url: " + url)
+	}
+
+	if port == "" {
+		port = "2003"
+	}
+
+	var network string
+	var protocol int
+	switch net {
+	case "tcp":
+		network, protocol = "tcp", plain
+	case "udp":
+		network, protocol = "udp", plain
+	case "pickle":
+		network, protocol = "tcp", pickle
+	}
+
 	client := &Client{
 		prefix:   cleanPrefix(prefix),
-		network:  "tcp",
-		address:  fmt.Sprintf("%s:%d", host, port),
-		protocol: plain,
+		network:  network,
+		address:  fmt.Sprintf("%s:%s", host, port),
+		protocol: protocol,
 		delay:    reconnectDelay,
 
 		metricPool: make(chan *Metric, 10000),
@@ -161,31 +208,6 @@ func NewTCPClient(host string, port int, prefix string, reconnectDelay time.Dura
 	}
 	go client.worker()
 	return client, nil
-}
-
-// NewUDPClient creates a graphite client that sends metric using plain text protocol over udp
-func NewUDPClient(host string, port int, prefix string, reconnectDelay time.Duration) (*Client, error) {
-	// TODO check if host and port is valid
-	client := &Client{
-		prefix:   cleanPrefix(prefix),
-		network:  "udp",
-		address:  fmt.Sprintf("%s:%d", host, port),
-		protocol: plain,
-		delay:    reconnectDelay,
-
-		metricPool: make(chan *Metric, 10000),
-		conn:       nil,
-
-		shutdown:      false,
-		workerStopped: make(chan struct{}, 1),
-	}
-	go client.worker()
-	return client, nil
-}
-
-// NewPickleClient creates a graphite client that sends metric using pickle protocol
-func NewPickleClient() (*Client, error) {
-	return nil, errors.New("Pickle client is not implemented")
 }
 
 // NewNopClient creates a graphite client that does nothing
