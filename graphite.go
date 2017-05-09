@@ -1,8 +1,11 @@
 package graphite
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/kisielk/og-rek"
 	"net"
 	"regexp"
 	"strings"
@@ -34,15 +37,20 @@ func (m *Metric) PlainB(prefix string) []byte {
 	return []byte(m.Plain(prefix))
 }
 
-// Pickle marshalls metric using pickle protocol
-func (m *Metric) Pickle(prefix string) string {
-	// TODO implement this
-	return ""
-}
-
 // PickleB marshalls metric using pickle protocol, into byte slice
 func (m *Metric) PickleB(prefix string) []byte {
-	return []byte(m.PickleB(prefix))
+	// code taken from: https://github.com/graphite-ng/carbon-relay-ng/blob/master/destination/pickle.go
+	dataBuf := &bytes.Buffer{}
+	pickler := ogórek.NewEncoder(dataBuf)
+
+	// pickle format (in python talk): [(path, (timestamp, value)), ...]
+	point := []interface{}{string(m.Name), []interface{}{m.Timestamp, m.Value}}
+	list := []interface{}{point}
+	pickler.Encode(list)
+	messageBuf := &bytes.Buffer{}
+	binary.Write(messageBuf, binary.BigEndian, uint32(dataBuf.Len()))
+	messageBuf.Write(dataBuf.Bytes())
+	return messageBuf.Bytes()
 }
 
 // Client represents a graphite client
