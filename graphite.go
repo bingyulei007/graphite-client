@@ -25,10 +25,7 @@ type Metric struct {
 
 // Plain marshalls metric using plain text protocol
 func (m *Metric) Plain(prefix string) string {
-	if prefix == "" {
-		return fmt.Sprintf("%s %v %v\n", m.Name, m.Value, m.Timestamp)
-	}
-	return fmt.Sprintf("%s.%s %v %v\n", prefix, m.Name, m.Value, m.Timestamp)
+	return fmt.Sprintf("%s%s %v %v\n", prefix, m.Name, m.Value, m.Timestamp)
 }
 
 // PlainB marshalls metric using plain text protocol, into byte slice
@@ -142,7 +139,7 @@ func (c *Client) Shutdown(timeout time.Duration) {
 // cleanPrefix cleans up caller passed prefix, removes leading and trailing white spaces and dots
 func cleanPrefix(prefix string) string {
 	// TODO check for invalid characters
-	return strings.Trim(prefix, ". ")
+	return strings.Trim(prefix, " ")
 }
 
 // NewTCPClient creates a graphite client that sends metric using plain text protocol over tcp

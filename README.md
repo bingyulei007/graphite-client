@@ -29,7 +29,7 @@ client.Shutdown(1*time.Second)
 // ---------------------------------------------
 
 // Name of all metrics sent by this client will be prefixed with 'myprogram.'
-prefixedClient := graphite.NewUDPClient("127.0.0.1", 2003, "myprogram", 1*time.Second)
+prefixedClient := graphite.NewUDPClient("127.0.0.1", 2003, "myprogram.", 1*time.Second)
 
 // Server will get: 'myprogram.test.float 1.2 1493795673'
 client.SendSimple("test.float", 1.2, 1493795673)

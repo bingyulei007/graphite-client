@@ -34,10 +34,10 @@ var metricTestData = []struct {
 	{"test.float64", float64(12.3), int64(1493712949), "", "test.float64 12.3 1493712949\n"},
 	{"test.float64", float64(12.34567890), int64(1493712949), "", "test.float64 12.3456789 1493712949\n"},
 	// test prefix
-	{"test.int", int(34), int64(1493712949), "abc", "abc.test.int 34 1493712949\n"},
+	{"test.int", int(34), int64(1493712949), "abc", "abctest.int 34 1493712949\n"},
 	{"test.int", int(34), int64(1493712949), "def.", "def.test.int 34 1493712949\n"},
-	{"test.int", int(34), int64(1493712949), "ghi ", "ghi.test.int 34 1493712949\n"},
-	{"test.int", int(34), int64(1493712949), ". jkl ", "jkl.test.int 34 1493712949\n"},
+	{"test.int", int(34), int64(1493712949), "ghi- ", "ghi-test.int 34 1493712949\n"},
+	{"test.int", int(34), int64(1493712949), " jkl ", "jkltest.int 34 1493712949\n"},
 }
 
 var tcpServer = NewGraphiteServer("tcp", "127.0.0.1:62003")
