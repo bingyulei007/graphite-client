@@ -83,7 +83,10 @@ func (c *Client) SendMetric(metric *Metric) {
 		//   3. this routine regain control, and tries to send the metric to metricPool, panic happens
 		recover()
 	}()
-	c.metricPool <- metric
+	select {
+	case c.metricPool <- metric:
+	default: // channel full, silently drop, don't block caller
+	}
 }
 
 // SendMetrics sends a bunch of metrics to the server.
